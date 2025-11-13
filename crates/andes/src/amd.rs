@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     mem::{replace, take},
 };
 
@@ -19,121 +19,10 @@ pub struct AMD {
     body: BlockStmt,
     params: Vec<Ident>,
     imports: BTreeMap<Atom, Ident>,
+    exports: BTreeSet<Wtf8Atom>,
     awaiter_flag: bool,
 }
 impl AMD {
-    fn compose_params(&mut self, i: usize) -> BlockStmt {
-        let exports = self.get_import(Atom::new("exports"), self.body.span);
-        let i2 = self.params.len();
-        let mut k = self.body.clone();
-        for i in (0..i2).rev() {
-            let p = self.params[i].clone();
-            let s = Box::new(Stmt::Expr(ExprStmt {
-                span: p.span,
-                expr: Box::new(Expr::Assign(AssignExpr {
-                    span: p.span,
-                    op: AssignOp::NullishAssign,
-                    left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
-                        span: p.span,
-                        obj: exports.clone().into(),
-                        prop: MemberProp::Ident(IdentName {
-                            span: p.span,
-                            sym: Atom::new("__esm_awaiter"),
-                        }),
-                    })),
-                    right: match Box::new(Expr::Arrow(ArrowExpr {
-                        span: p.span,
-                        ctxt: p.ctxt,
-                        params: Default::default(),
-                        is_async: false,
-                        is_generator: true,
-                        type_params: None,
-                        return_type: None,
-                        body: Box::new({
-                            let mut b = self.body.clone();
-                            for _ in b.stmts.splice(
-                                0..0,
-                                self.params[i..].iter().map(|p| {
-                                    Stmt::If(IfStmt {
-                                        span: p.span,
-                                        test: Box::new(Expr::Bin(BinExpr {
-                                            span: p.span,
-                                            op: BinaryOp::In,
-                                            left: Box::new(Expr::Lit(Lit::Str(Str {
-                                                span: p.span,
-                                                value: Wtf8Atom::new("__esm_awaiter"),
-                                                raw: None,
-                                            }))),
-                                            right: p.clone().into(),
-                                        })),
-                                        alt: None,
-                                        cons: Box::new(Stmt::Expr(ExprStmt {
-                                            span: p.span,
-                                            expr: Box::new(Expr::Assign(AssignExpr {
-                                                span: p.span,
-                                                op: AssignOp::Assign,
-                                                left: p.clone().into(),
-                                                right: Box::new(Expr::Yield(YieldExpr {
-                                                    span: p.span,
-                                                    delegate: true,
-                                                    arg: Some(Box::new(Expr::Member(MemberExpr {
-                                                        span: p.span,
-                                                        obj: p.clone().into(),
-                                                        prop: MemberProp::Ident(IdentName {
-                                                            span: p.span,
-                                                            sym: Atom::new("__esm_awaiter"),
-                                                        }),
-                                                    }))),
-                                                })),
-                                            })),
-                                        })),
-                                    })
-                                }),
-                            ) {}
-                            BlockStmtOrExpr::BlockStmt(b)
-                        }),
-                    })) {
-                        e => Box::new(Expr::Call(CallExpr {
-                            span: e.span(),
-                            ctxt: Default::default(),
-                            callee: Callee::Expr(e),
-                            args: Default::default(),
-                            type_args: None,
-                        })),
-                    },
-                })),
-            }));
-            if self.awaiter_flag && i == 0 {
-                return BlockStmt {
-                    span: s.span(),
-                    ctxt: self.body.ctxt,
-                    stmts: [*s].into_iter().collect(),
-                };
-            }
-            k = BlockStmt {
-                span: p.span,
-                ctxt: p.ctxt,
-                stmts: [Stmt::If(IfStmt {
-                    span: p.span,
-                    test: Box::new(Expr::Bin(BinExpr {
-                        span: p.span,
-                        op: BinaryOp::In,
-                        left: Box::new(Expr::Lit(Lit::Str(Str {
-                            span: p.span,
-                            value: Wtf8Atom::new("__esm_awaiter"),
-                            raw: None,
-                        }))),
-                        right: p.clone().into(),
-                    })),
-                    cons: s,
-                    alt: Some(k.into()),
-                })]
-                .into_iter()
-                .collect(),
-            };
-        }
-        return k;
-    }
     fn get_import(&mut self, a: Atom, span: Span) -> Ident {
         return self
             .imports
@@ -282,6 +171,7 @@ impl<'a> VisitMut for AMDPass<'a> {
                         node.push(ModuleItem::Stmt(Stmt::Decl(export_decl.decl)));
                         let exports = self.amd.get_import(Atom::new("exports"), export_decl.span);
                         for n in name {
+                            self.amd.exports.insert(n.sym.clone().into());
                             node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
                                 span: export_decl.span,
                                 expr: Box::new(Expr::Assign(AssignExpr {
@@ -335,6 +225,7 @@ impl<'a> VisitMut for AMDPass<'a> {
                                     (id, x)
                                 }
                             };
+                            self.amd.exports.insert(x.clone());
                             node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
                                 span: named_export.span,
                                 expr: Box::new(Expr::Assign(AssignExpr {
@@ -388,6 +279,7 @@ impl<'a> VisitMut for AMDPass<'a> {
                         let exports = self
                             .amd
                             .get_import(Atom::new("exports"), export_default_decl.span);
+                        self.amd.exports.insert(Wtf8Atom::new("default"));
                         node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
                             span: export_default_decl.span,
                             expr: Box::new(Expr::Assign(AssignExpr {
@@ -411,6 +303,7 @@ impl<'a> VisitMut for AMDPass<'a> {
                         let exports = self
                             .amd
                             .get_import(Atom::new("exports"), export_default_expr.span);
+                        self.amd.exports.insert(Wtf8Atom::new("default"));
                         node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
                             span: export_default_expr.span,
                             expr: Box::new(Expr::Assign(AssignExpr {
