@@ -1,6 +1,7 @@
 [workspace]
 packages=[]
 resolver="3"
+members = ["crates/andes"]
 
 [workspace.package]
 license = "MPL-2.0"
