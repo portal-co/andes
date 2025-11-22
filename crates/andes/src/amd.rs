@@ -1,3 +1,5 @@
+use swc_ecma_ast::{FnDecl, Module, Pat, Script};
+
 use super::*;
 
 // use swc_ecma_parser::token::IdentKind;
@@ -5,12 +7,117 @@ pub struct AMD {
     modules: ArrayLit,
     body: BlockStmt,
     params: Vec<Ident>,
-    imports: BTreeMap<Atom, Ident>,
+    imports: BTreeMap<Wtf8Atom, Ident>,
     exports: BTreeSet<Wtf8Atom>,
     awaiter_flag: bool,
 }
 impl AMD {
-    fn get_import(&mut self, a: Atom, span: Span) -> Ident {
+    pub fn process(mut module: Module) -> Script {
+        let imports = Self::collect_imports(&mut module.body);
+        let mut amd = AMD {
+            modules: ArrayLit {
+                span: module.span,
+                elems: Default::default(),
+            },
+            body: BlockStmt {
+                span: module.span,
+                ctxt: Default::default(),
+                stmts: Default::default(),
+            },
+            params: Default::default(),
+            imports: Default::default(),
+            exports: Default::default(),
+            awaiter_flag: false,
+        };
+        module.visit_mut_with(&mut AMDPass {
+            amd: &mut amd,
+            idents: imports,
+            in_func: false,
+        });
+        let exports = amd.get_import(Wtf8Atom::new("exports"), module.span);
+        let body = module
+            .body
+            .drain(..)
+            .filter_map(|a| match a {
+                ModuleItem::Stmt(s) => Some(s),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut script_body: Vec<Stmt> = Default::default();
+        let ident = Ident::new_private(Atom::new("__esm"), module.span);
+        script_body.push(Stmt::Decl(Decl::Fn(FnDecl {
+            ident: ident.clone(),
+            declare: false,
+            function: Box::new(Function {
+                params: amd
+                    .params
+                    .iter()
+                    .map(|a| Param {
+                        span: a.span,
+                        decorators: Default::default(),
+                        pat: swc_ecma_ast::Pat::Ident(a.clone().into()),
+                    })
+                    .collect(),
+                decorators: Default::default(),
+                span: ident.span,
+                ctxt: ident.ctxt,
+                body: Some(BlockStmt {
+                    span: ident.span,
+                    ctxt: ident.ctxt,
+                    stmts: body,
+                }),
+                is_generator: true,
+                is_async: false,
+                type_params: None,
+                return_type: None,
+            }),
+        })));
+        script_body.push(Stmt::Expr(ExprStmt {
+            span: module.span,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: module.span,
+                ctxt: Default::default(),
+                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new_no_ctxt(
+                    Atom::new("define"),
+                    module.span,
+                )))),
+                args: [
+                    Expr::Array(amd.modules),
+                    Expr::Arrow(ArrowExpr {
+                        span: module.span,
+                        ctxt: Default::default(),
+                        params: amd
+                            .params
+                            .iter()
+                            .map(|a| Pat::Ident(a.clone().into()))
+                            .collect(),
+                        body: Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
+                            span: module.span,
+                            ctxt: Default::default(),
+                            stmts: [].into_iter().collect(),
+                        })),
+                        is_async: false,
+                        is_generator: false,
+                        type_params: None,
+                        return_type: None,
+                    }),
+                ]
+                .into_iter()
+                .map(|a| ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(a),
+                })
+                .collect(),
+                type_args: None,
+            })),
+        }));
+        Script {
+            span: module.span,
+            body: script_body,
+            shebang: module.shebang,
+        }
+    }
+    fn get_import(&mut self, a: Wtf8Atom, span: Span) -> Ident {
         return self
             .imports
             .entry(a)
@@ -23,7 +130,7 @@ impl AMD {
                         raw: None,
                     }))),
                 }));
-                let id = Ident::new_private(a.clone(), span);
+                let id = Ident::new_private((&*a.to_atom_lossy()).clone(), span);
                 self.params.push(id.clone().into());
                 return id;
             })
@@ -78,7 +185,7 @@ impl AMD {
 }
 struct AMDPass<'a> {
     amd: &'a mut AMD,
-    idents: BTreeMap<Id, (Atom, Option<Atom>)>,
+    idents: BTreeMap<Id, (Wtf8Atom, Option<Wtf8Atom>)>,
     in_func: bool,
 }
 impl<'a> VisitMut for AMDPass<'a> {
@@ -156,7 +263,9 @@ impl<'a> VisitMut for AMDPass<'a> {
                             Decl::TsModule(ts_module_decl) => todo!(),
                         };
                         node.push(ModuleItem::Stmt(Stmt::Decl(export_decl.decl)));
-                        let exports = self.amd.get_import(Atom::new("exports"), export_decl.span);
+                        let exports = self
+                            .amd
+                            .get_import(Wtf8Atom::new("exports"), export_decl.span);
                         for n in name {
                             self.amd.exports.insert(n.sym.clone().into());
                             node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
@@ -180,7 +289,9 @@ impl<'a> VisitMut for AMDPass<'a> {
                         }
                     }
                     ModuleDecl::ExportNamed(named_export) => {
-                        let exports = self.amd.get_import(Atom::new("exports"), named_export.span);
+                        let exports = self
+                            .amd
+                            .get_import(Wtf8Atom::new("exports"), named_export.span);
                         for s in named_export.specifiers {
                             let (id, x) = match s {
                                 swc_ecma_ast::ExportSpecifier::Namespace(
@@ -265,7 +376,7 @@ impl<'a> VisitMut for AMDPass<'a> {
                         })));
                         let exports = self
                             .amd
-                            .get_import(Atom::new("exports"), export_default_decl.span);
+                            .get_import(Wtf8Atom::new("exports"), export_default_decl.span);
                         self.amd.exports.insert(Wtf8Atom::new("default"));
                         node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
                             span: export_default_decl.span,
@@ -289,7 +400,7 @@ impl<'a> VisitMut for AMDPass<'a> {
                     ModuleDecl::ExportDefaultExpr(export_default_expr) => {
                         let exports = self
                             .amd
-                            .get_import(Atom::new("exports"), export_default_expr.span);
+                            .get_import(Wtf8Atom::new("exports"), export_default_expr.span);
                         self.amd.exports.insert(Wtf8Atom::new("default"));
                         node.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
                             span: export_default_expr.span,
