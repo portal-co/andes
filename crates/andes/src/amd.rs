@@ -13,7 +13,6 @@ pub struct AMD {
 }
 impl AMD {
     pub fn process(mut module: Module) -> Script {
-        let imports = Self::collect_imports(&mut module.body);
         let mut amd = AMD {
             modules: ArrayLit {
                 span: module.span,
@@ -29,6 +28,8 @@ impl AMD {
             exports: Default::default(),
             awaiter_flag: false,
         };
+        let imports = amd.collect_imports(&mut module.body);
+
         module.visit_mut_with(&mut AMDPass {
             amd: &mut amd,
             idents: imports,
@@ -137,7 +138,10 @@ impl AMD {
             .clone()
             .with_pos(span.lo, span.hi);
     }
-    fn collect_imports(a: &mut Vec<ModuleItem>) -> BTreeMap<Id, (Wtf8Atom, Option<Wtf8Atom>)> {
+    fn collect_imports(
+        &mut self,
+        a: &mut Vec<ModuleItem>,
+    ) -> BTreeMap<Id, (Wtf8Atom, Option<Wtf8Atom>)> {
         let mut m: BTreeMap<Id, (Wtf8Atom, Option<Wtf8Atom>)> = BTreeMap::new();
         for a2 in take(a) {
             let a2 = match a2 {
